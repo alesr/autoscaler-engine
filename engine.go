@@ -23,11 +23,10 @@ type WorkloadScaler interface {
 }
 
 type Engine struct {
-	logger          *slog.Logger
-	provider        BacklogProvider
-	scaler          WorkloadScaler
-	config          Config
-	lastScaleUpTime time.Time
+	logger   *slog.Logger
+	provider BacklogProvider
+	scaler   WorkloadScaler
+	config   Config
 }
 
 func New(logger *slog.Logger, p BacklogProvider, s WorkloadScaler, cfg Config) *Engine {
@@ -39,35 +38,38 @@ func New(logger *slog.Logger, p BacklogProvider, s WorkloadScaler, cfg Config) *
 	}
 }
 
-func (e *Engine) Reconcile(ctx context.Context) error {
+// Reconcile accepts the previous scale-up time from the caller and returns the updated scale-up time.
+func (e *Engine) Reconcile(ctx context.Context, lastScaleUp time.Time) (time.Time, error) {
 	backlog, err := e.provider.GetBacklog(ctx)
 	if err != nil {
-		return err
+		return lastScaleUp, err
 	}
 
 	desired := e.calculateReplicas(backlog)
 
 	current, err := e.scaler.GetReplicas(ctx)
 	if err != nil {
-		return err
+		return lastScaleUp, err
 	}
 
 	if desired < current {
-		if time.Since(e.lastScaleUpTime) < e.config.CooldownPeriod {
+		if time.Since(lastScaleUp) < e.config.CooldownPeriod {
 			e.logger.Debug("Cooldown active, skipping scale-down")
-			return nil
+			return lastScaleUp, nil
 		}
-	} else if desired > current {
-		e.lastScaleUpTime = time.Now()
 	}
 
 	if current != desired {
 		if err := e.scaler.SetReplicas(ctx, desired); err != nil {
-			return err
+			return lastScaleUp, err
 		}
 		e.logger.Debug("Deployment scaled successfully", "from", current, "to", desired)
+
+		if desired > current {
+			return time.Now(), nil
+		}
 	}
-	return nil
+	return lastScaleUp, nil
 }
 
 func (e *Engine) calculateReplicas(backlog int64) int32 {
